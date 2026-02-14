@@ -1,5 +1,5 @@
 {
-  "name": "recipe-installer",
+  "name": "tx-run",
   "version": "1.0.0",
   "description": "txAdmin-compatible recipe installer for RedM servers on Linux",
   "type": "module",
