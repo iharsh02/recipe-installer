@@ -1,6 +1,6 @@
 {
   "name": "tx-run",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "txAdmin-compatible recipe installer for RedM servers on Linux",
   "type": "module",
   "main": "dist/index.js",
