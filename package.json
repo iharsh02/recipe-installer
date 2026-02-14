@@ -1,0 +1,42 @@
+{
+  "name": "recipe-installer",
+  "version": "1.0.0",
+  "description": "txAdmin-compatible recipe installer for RedM servers on Linux",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "redm-recipe-installer": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": [],
+  "author": "https://github.com/iharsh02",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@10.27.0",
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^25.2.3",
+    "@types/prompts": "^2.4.9",
+    "@types/tar": "^6.1.13",
+    "@types/unzipper": "^0.10.11",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "fs-extra": "^11.3.3",
+    "mysql2": "^3.17.1",
+    "ora": "^9.3.0",
+    "prompts": "^2.4.2",
+    "tar": "^7.5.7",
+    "unzipper": "^0.12.3",
+    "yaml": "^2.8.2"
+  }
+}
