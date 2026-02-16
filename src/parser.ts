@@ -38,7 +38,12 @@ export function parseRecipe(yamlContent: string): Recipe {
         }
     }
 
-    return raw as Recipe;
+    return {
+        version: '0.0.0',
+        author: 'Unknown',
+        description: '',
+        ...raw,
+    } as Recipe;
 }
 
 //   Fetch a recipe from a remote URL and parse it.

@@ -22,29 +22,31 @@ import { fetchRecipe, loadRecipeFromFile } from './parser.js';
 import { executeTask } from './actions/index.js';
 import { describeTask } from './utils.js';
 import { Recipe, RecipeContext } from './types.js';
-
-function printBanner() {
-    console.log('');
-    console.log(chalk.red.bold('  ╔══════════════════════════════════════════╗'));
-    console.log(chalk.red.bold('  ║') + chalk.yellow.bold('   🤠 RedM Recipe Installer (Linux)     ') + chalk.red.bold('║'));
-    console.log(chalk.red.bold('  ║') + chalk.gray('   txAdmin-compatible recipe executor    ') + chalk.red.bold('║'));
-    console.log(chalk.red.bold('  ╚══════════════════════════════════════════╝'));
-    console.log('');
-}
-
-function printRecipeInfo(recipe: Recipe) {
-    console.log(chalk.cyan.bold('  📜 Recipe Information'));
-    console.log(chalk.gray('  ─────────────────────────────────────────'));
-    console.log(`  ${chalk.bold('Name:')}         ${recipe.name}`);
-    console.log(`  ${chalk.bold('Version:')}      ${recipe.version}`);
-    console.log(`  ${chalk.bold('Author:')}       ${recipe.author}`);
-    console.log(`  ${chalk.bold('Description:')}  ${recipe.description}`);
-    console.log(`  ${chalk.bold('Tasks:')}        ${recipe.tasks.length} steps`);
-    if (recipe.$onesync) {
-        console.log(`  ${chalk.bold('OneSync:')}      ${recipe.$onesync}`);
-    }
-    console.log('');
-}
+import { downloadAndExtractArtifacts } from './artifacts.js';
+import {
+    printBanner,
+    printRecipeInfo,
+    printInstallSummary,
+    printStarting,
+    printRecipeTasksHeader,
+    printComplete,
+} from './ui.js';
+import {
+    DEFAULT_PROJECT_NAME,
+    DEFAULT_DB_HOST,
+    DEFAULT_DB_PORT,
+    DEFAULT_DB_USERNAME,
+    DEFAULT_DB_PASSWORD,
+    DEFAULT_DB_NAME,
+    DEFAULT_SERVER_NAME,
+    DEFAULT_MAX_CLIENTS,
+    DEFAULT_SERVER_ENDPOINTS,
+    SERVER_DIR_NAME,
+    SERVER_DATA_DIR_NAME,
+    RECIPE_URL_HINT,
+    START_SCRIPT_FILENAME,
+    START_SCRIPT_CONTENT,
+} from './config.js';
 
 function recipeUsesDatabase(recipe: Recipe): boolean {
     return recipe.tasks.some(
@@ -52,25 +54,95 @@ function recipeUsesDatabase(recipe: Recipe): boolean {
     );
 }
 
+async function generateStartScript(projectDir: string): Promise<void> {
+    const scriptPath = path.join(projectDir, START_SCRIPT_FILENAME);
+    await fse.writeFile(scriptPath, START_SCRIPT_CONTENT, { mode: 0o700 });
+}
+
+async function runRecipeTasks(recipe: Recipe, ctx: RecipeContext): Promise<void> {
+    let completed = 0;
+    const total = recipe.tasks.length;
+
+    for (const task of recipe.tasks) {
+        completed++;
+        const prefix = chalk.gray(`[${completed}/${total}]`);
+        const description = describeTask(task);
+        const spinner = ora(`${prefix} ${description}`).start();
+
+        try {
+            await executeTask(task, ctx);
+            spinner.succeed(`${prefix} ${description}`);
+        } catch (err: any) {
+            spinner.fail(`${prefix} ${description}`);
+            console.error(chalk.red(`\n  ✖ Error: ${err.message}\n`));
+
+            const { continueOnError } = await prompts({
+                type: 'confirm',
+                name: 'continueOnError',
+                message: 'Continue with remaining tasks?',
+                initial: false,
+            }, { onCancel: () => process.exit(1) });
+
+            if (!continueOnError) {
+                process.exit(1);
+            }
+        }
+    }
+}
 
 async function main() {
     printBanner();
 
-    // Parse CLI args
+    const onCancel = () => {
+        console.log(chalk.red('\n  ✖ Cancelled.\n'));
+        process.exit(0);
+    };
+
     const args = process.argv.slice(2);
     const skipDb = args.includes('--skip-db');
+
+    const hashFlagIdx = args.indexOf('--artifact-hash');
+    const expectedArtifactHash = hashFlagIdx !== -1 ? args[hashFlagIdx + 1] : undefined;
 
     if (skipDb) {
         console.log(chalk.yellow('  ⚠ Database actions will be skipped (--skip-db)\n'));
     }
 
+    const { projectName } = await prompts({
+        type: 'text',
+        name: 'projectName',
+        message: 'Project name',
+        initial: DEFAULT_PROJECT_NAME,
+        validate: (v: string) => v.trim().length > 0 || 'Project name is required',
+    }, { onCancel });
+
+    if (!projectName) {
+        console.log(chalk.red('\n  ✖ No project name provided. Exiting.\n'));
+        process.exit(1);
+    }
+
+    const projectDir = path.resolve(projectName);
+    const serverDir = path.join(projectDir, SERVER_DIR_NAME);
+    const serverDataDir = path.join(projectDir, SERVER_DATA_DIR_NAME);
+
+    if (await fse.pathExists(projectDir)) {
+        const { overwrite } = await prompts({
+            type: 'confirm',
+            name: 'overwrite',
+            message: `Directory "${projectName}" already exists. Continue?`,
+            initial: false,
+        }, { onCancel });
+        if (!overwrite) {
+            process.exit(0);
+        }
+    }
 
     const { recipeSource } = await prompts({
         type: 'text',
         name: 'recipeSource',
         message: 'Recipe source (URL or local file path)',
-        hint: 'e.g. https://github.com/Rexshack-RedM/txAdminRecipe/blob/main/rsgcore.yaml',
-    });
+        hint: RECIPE_URL_HINT,
+    }, { onCancel });
 
     if (!recipeSource) {
         console.log(chalk.red('\n  ✖ No recipe source provided. Exiting.\n'));
@@ -95,21 +167,6 @@ async function main() {
     console.log('');
     printRecipeInfo(recipe);
 
-
-    const { targetDir } = await prompts({
-        type: 'text',
-        name: 'targetDir',
-        message: 'Installation directory',
-        initial: './server',
-    });
-
-    if (!targetDir) {
-        console.log(chalk.red('\n  ✖ No target directory provided. Exiting.\n'));
-        process.exit(1);
-    }
-
-    const basePath = path.resolve(targetDir);
-
     let dbVars: Record<string, string> = {};
     const needsDb = recipeUsesDatabase(recipe);
 
@@ -122,19 +179,19 @@ async function main() {
                 type: 'text',
                 name: 'dbHost',
                 message: 'Database host',
-                initial: 'localhost',
+                initial: DEFAULT_DB_HOST,
             },
             {
                 type: 'text',
                 name: 'dbPort',
                 message: 'Database port',
-                initial: '3306',
+                initial: DEFAULT_DB_PORT,
             },
             {
                 type: 'text',
                 name: 'dbUsername',
                 message: 'Database username',
-                initial: 'root',
+                initial: DEFAULT_DB_USERNAME,
             },
             {
                 type: 'password',
@@ -145,16 +202,16 @@ async function main() {
                 type: 'text',
                 name: 'dbName',
                 message: 'Database name',
-                initial: 'rsg_redm',
+                initial: DEFAULT_DB_NAME,
             },
-        ]);
+        ], { onCancel });
 
         dbVars = {
-            dbHost: dbConfig.dbHost || 'localhost',
-            dbPort: dbConfig.dbPort || '3306',
-            dbUsername: dbConfig.dbUsername || 'root',
-            dbPassword: dbConfig.dbPassword || '',
-            dbName: dbConfig.dbName || 'rsg_redm',
+            dbHost: dbConfig.dbHost || DEFAULT_DB_HOST,
+            dbPort: dbConfig.dbPort || DEFAULT_DB_PORT,
+            dbUsername: dbConfig.dbUsername || DEFAULT_DB_USERNAME,
+            dbPassword: dbConfig.dbPassword || DEFAULT_DB_PASSWORD,
+            dbName: dbConfig.dbName || DEFAULT_DB_NAME,
         };
 
         const { dbHost, dbPort, dbUsername, dbPassword, dbName } = dbVars;
@@ -176,128 +233,111 @@ async function main() {
             type: 'text',
             name: 'serverName',
             message: 'Server name',
-            initial: recipe.name || 'My RedM Server',
+            initial: recipe.name || DEFAULT_SERVER_NAME,
         },
-    ]);
+    ], { onCancel });
 
-    console.log(chalk.cyan('\n  📋 Installation Summary'));
-    console.log(chalk.gray('  ─────────────────────────────────────────'));
-    console.log(`  ${chalk.bold('Recipe:')}      ${recipe.name} v${recipe.version}`);
-    console.log(`  ${chalk.bold('Target:')}      ${basePath}`);
-    console.log(`  ${chalk.bold('Tasks:')}       ${recipe.tasks.length} steps`);
-    console.log(`  ${chalk.bold('Database:')}    ${needsDb ? (skipDb ? chalk.yellow('Skipped') : chalk.green(dbVars.dbName)) : chalk.gray('Not needed')}`);
-    console.log('');
+    printInstallSummary({
+        projectName,
+        projectDir,
+        recipe,
+        needsDb,
+        skipDb,
+        dbName: dbVars.dbName,
+    });
 
     const { confirmed } = await prompts({
         type: 'confirm',
         name: 'confirmed',
         message: 'Proceed with installation?',
         initial: true,
-    });
+    }, { onCancel });
 
     if (!confirmed) {
         console.log(chalk.red('\n  ✖ Installation cancelled.\n'));
         process.exit(0);
     }
 
+    printStarting();
+    const startTime = Date.now();
 
-    console.log(chalk.cyan.bold('\n  🚀 Starting Installation\n'));
+    const dirSpinner = ora('Creating project directories...').start();
+    await fse.ensureDir(serverDir);
+    await fse.ensureDir(serverDataDir);
+    dirSpinner.succeed(`Created ${chalk.bold(projectName)}/server/ and server-data/`);
+
+    await downloadAndExtractArtifacts(serverDir, expectedArtifactHash);
+
+    printRecipeTasksHeader(recipe.tasks.length);
 
     const ctx: RecipeContext = {
         vars: {
             ...Object.fromEntries(
                 Object.entries(recipe.variables || {}).filter(([, v]) => v != null)
             ) as Record<string, string>,
-            ...dbVars,
-            svLicense: serverConfig.svLicense || '',
+            dbName: dbVars.dbName || '',
             serverName: serverConfig.serverName || recipe.name,
             recipeName: recipe.name,
             recipeAuthor: recipe.author,
             recipeVersion: recipe.version,
             recipeDescription: recipe.description,
-            maxClients: '32',
-            serverEndpoints: 'endpoint_add_tcp "0.0.0.0:30120"\nendpoint_add_udp "0.0.0.0:30120"',
+            maxClients: DEFAULT_MAX_CLIENTS,
+            serverEndpoints: DEFAULT_SERVER_ENDPOINTS.join('\n'),
         },
-        basePath,
+        sensitiveVars: {
+            dbHost: dbVars.dbHost || '',
+            dbPort: dbVars.dbPort || '',
+            dbUsername: dbVars.dbUsername || '',
+            dbPassword: dbVars.dbPassword || '',
+            dbConnectionString: dbVars.dbConnectionString || '',
+            svLicense: serverConfig.svLicense || '',
+        },
+        basePath: serverDataDir,
         skipDb,
     };
-
-    await fse.ensureDir(basePath);
 
     process.on('exit', () => {
         ctx.dbConnection?.end().catch(() => { });
     });
 
-    let completed = 0;
-    const total = recipe.tasks.length;
-    const startTime = Date.now();
+    await runRecipeTasks(recipe, ctx);
 
-    for (const task of recipe.tasks) {
-        completed++;
-        const prefix = chalk.gray(`[${completed}/${total}]`);
-        const description = describeTask(task);
-        const spinner = ora(`${prefix} ${description}`).start();
-
-        try {
-            await executeTask(task, ctx);
-            spinner.succeed(`${prefix} ${description}`);
-        } catch (err: any) {
-            spinner.fail(`${prefix} ${description}`);
-            console.error(chalk.red(`\n  ✖ Error: ${err.message}\n`));
-
-            const { continueOnError } = await prompts({
-                type: 'confirm',
-                name: 'continueOnError',
-                message: 'Continue with remaining tasks?',
-                initial: false,
-            });
-
-            if (!continueOnError) {
-                process.exit(1);
-            }
-        }
-    }
-
-
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-    const serverCfgPath = path.join(basePath, 'server.cfg');
+    const serverCfgPath = path.join(serverDataDir, 'server.cfg');
     if (await fse.pathExists(serverCfgPath)) {
         let cfg = await fse.readFile(serverCfgPath, 'utf-8');
-        cfg = cfg.replace(/\{\{svLicense\}\}/g, serverConfig.svLicense || 'changeme');
-        cfg = cfg.replace(
-            /\{\{serverName\}\}/g,
-            serverConfig.serverName || recipe.name
-        );
-        cfg = cfg.replace(/\{\{maxClients\}\}/g, '32');
-        cfg = cfg.replace(
-            /\{\{serverEndpoints\}\}/g,
-            'endpoint_add_tcp "0.0.0.0:30120"\nendpoint_add_udp "0.0.0.0:30120"'
-        );
-        if (dbVars.dbConnectionString) {
-            cfg = cfg.replace(
-                /\{\{dbConnectionString\}\}/g,
-                dbVars.dbConnectionString
-            );
-        }
-        await fse.writeFile(serverCfgPath, cfg, 'utf-8');
+
+        const cfgVars: Record<string, string> = {
+            svLicense: ctx.sensitiveVars.svLicense || 'changeme',
+            serverName: ctx.vars.serverName || recipe.name,
+            maxClients: DEFAULT_MAX_CLIENTS,
+            serverEndpoints: DEFAULT_SERVER_ENDPOINTS.join('\n'),
+            ...(ctx.sensitiveVars.dbConnectionString ? { dbConnectionString: ctx.sensitiveVars.dbConnectionString } : {}),
+        };
+
+        cfg = cfg.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
+            return cfgVars[varName] ?? match;
+        });
+
+        await fse.writeFile(serverCfgPath, cfg, { encoding: 'utf-8', mode: 0o600 });
     }
+
+    // Clean up tmp directory if recipe didn't remove it
+    const tmpDir = path.join(serverDataDir, 'tmp');
+    if (await fse.pathExists(tmpDir)) {
+        await fse.remove(tmpDir);
+    }
+
+    const scriptSpinner = ora('Generating start.sh...').start();
+    await generateStartScript(projectDir);
+    scriptSpinner.succeed('Generated start.sh');
 
     if (ctx.dbConnection) {
         await ctx.dbConnection.end();
     }
 
-    console.log('');
-    console.log(chalk.green.bold('  ╔══════════════════════════════════════════╗'));
-    console.log(chalk.green.bold('  ║') + chalk.white.bold('   ✅ Installation Complete!              ') + chalk.green.bold('║'));
-    console.log(chalk.green.bold('  ╚══════════════════════════════════════════╝'));
-    console.log('');
-    console.log(`  ${chalk.bold('Time:')}    ${elapsed}s`);
-    console.log(`  ${chalk.bold('Target:')}  ${basePath}`);
-    console.log('');
-    console.log(chalk.gray('  To start your server, run your RedM server binary'));
-    console.log(chalk.gray(`  with +exec ${serverCfgPath}`));
-    console.log('');
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    printComplete({ elapsed, projectDir, projectName });
 }
 
 main().catch((err) => {

@@ -27,7 +27,10 @@ export async function downloadFile(
 
     await fse.ensureDir(path.dirname(destPath));
 
-    const response = await fetch(task.url, { redirect: 'follow' });
+    const response = await fetch(task.url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(60_000),
+    });
     if (!response.ok) {
         throw new Error(
             `Failed to download ${task.url}: ${response.status} ${response.statusText}`

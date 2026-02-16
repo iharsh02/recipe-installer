@@ -120,8 +120,10 @@ export interface WasteTimeTask {
 
 
 export interface RecipeContext {
-    /** Variables from recipe + user input */
+    /** Variables from recipe + user input (accessible to recipe actions) */
     vars: Record<string, string>;
+    /** Sensitive variables hidden from recipe actions (DB creds, license key) */
+    sensitiveVars: Record<string, string>;
     /** Base directory (the "jail" root) */
     basePath: string;
     /** MySQL connection (set by connect_database) */

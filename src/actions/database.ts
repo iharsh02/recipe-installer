@@ -16,6 +16,12 @@ import { readFile } from 'fs/promises';
 import mysql from 'mysql2/promise';
 import { ConnectDatabaseTask, QueryDatabaseTask, RecipeContext } from '../types.js';
 import { resolveSafePath } from '../utils.js';
+import {
+    DEFAULT_DB_HOST,
+    DEFAULT_DB_PORT,
+    DEFAULT_DB_USERNAME,
+    DEFAULT_DB_PASSWORD,
+} from '../config.js';
 
 export async function connectDatabase(
     _task: ConnectDatabaseTask,
@@ -25,24 +31,34 @@ export async function connectDatabase(
         return;
     }
 
+    const dbName = ctx.vars['dbName'];
+    if (dbName && !/^[a-zA-Z0-9_]+$/.test(dbName)) {
+        throw new Error(
+            `Invalid database name "${dbName}". Only alphanumeric characters and underscores are allowed.`
+        );
+    }
+
     const connection = await mysql.createConnection({
-        host: ctx.vars['dbHost'] || 'localhost',
-        port: parseInt(ctx.vars['dbPort'] || '3306', 10),
-        user: ctx.vars['dbUsername'] || 'root',
-        password: ctx.vars['dbPassword'] || '',
+        host: ctx.sensitiveVars['dbHost'] || DEFAULT_DB_HOST,
+        port: parseInt(ctx.sensitiveVars['dbPort'] || DEFAULT_DB_PORT, 10),
+        user: ctx.sensitiveVars['dbUsername'] || DEFAULT_DB_USERNAME,
+        password: ctx.sensitiveVars['dbPassword'] || DEFAULT_DB_PASSWORD,
         multipleStatements: true,
     });
 
-    // Create database if it doesn't exist
-    const dbName = ctx.vars['dbName'];
-    if (dbName) {
-        await connection.query(
-            `CREATE DATABASE IF NOT EXISTS \`${dbName}\``
-        );
-        await connection.query(`USE \`${dbName}\``);
-    }
+    try {
+        if (dbName) {
+            await connection.query(
+                `CREATE DATABASE IF NOT EXISTS \`${dbName}\``
+            );
+            await connection.query(`USE \`${dbName}\``);
+        }
 
-    ctx.dbConnection = connection;
+        ctx.dbConnection = connection;
+    } catch (err) {
+        await connection.end().catch(() => { });
+        throw err;
+    }
 }
 
 //   Execute SQL

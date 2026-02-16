@@ -12,13 +12,15 @@
  * limitations under the License.
  */
 
-import { createWriteStream } from 'fs';
+import { createWriteStream, lstatSync } from 'fs';
 import { pipeline } from 'stream/promises';
 import path from 'path';
 import { extract } from 'tar';
 import fse from 'fs-extra';
 import { DownloadGithubTask, RecipeContext } from '../types.js';
 import { resolveSafePath } from '../utils.js';
+
+const branchCache = new Map<string, string>();
 
 export async function downloadGithub(
     task: DownloadGithubTask,
@@ -70,7 +72,12 @@ export async function downloadGithub(
         }
 
         await fse.ensureDir(path.dirname(destPath));
-        await fse.copy(srcPath, destPath, { overwrite: true });
+        await fse.copy(srcPath, destPath, {
+            overwrite: true,
+            filter: (src) => {
+                try { return !lstatSync(src).isSymbolicLink(); } catch { return true; }
+            },
+        });
     } finally {
         await fse.remove(tarballPath).catch(() => { });
         await fse.remove(extractDir).catch(() => { });
@@ -97,22 +104,32 @@ async function getDefaultBranch(
     owner: string,
     repo: string
 ): Promise<string> {
+    const cacheKey = `${owner}/${repo}`;
+    const cached = branchCache.get(cacheKey);
+    if (cached) return cached;
+
     try {
         const response = await fetch(
-            `https://api.github.com/repos/${owner}/${repo}`
+            `https://api.github.com/repos/${owner}/${repo}`,
+            { signal: AbortSignal.timeout(10_000) }
         );
         if (response.ok) {
             const data = (await response.json()) as { default_branch: string };
+            branchCache.set(cacheKey, data.default_branch);
             return data.default_branch;
         }
     } catch {
     }
+    branchCache.set(cacheKey, 'main');
     return 'main';
 }
 
 async function fetchWithRetry(url: string, retries = 1): Promise<Response> {
     for (let attempt = 0; attempt <= retries; attempt++) {
-        const response = await fetch(url, { redirect: 'follow' });
+        const response = await fetch(url, {
+            redirect: 'follow',
+            signal: AbortSignal.timeout(30_000),
+        });
         if (response.ok) return response;
 
         if (attempt < retries) {

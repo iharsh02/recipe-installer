@@ -13,6 +13,7 @@
  */
 
 import { readFile, appendFile } from 'fs/promises';
+import path from 'path';
 import fse from 'fs-extra';
 import { WriteFileTask, ReplaceStringTask, RecipeContext } from '../types.js';
 import { resolveSafePath } from '../utils.js';
@@ -24,6 +25,7 @@ export async function writeFile(
     const filePath = resolveSafePath(ctx.basePath, task.file);
 
     if (task.append) {
+        await fse.ensureDir(path.dirname(filePath));
         await appendFile(filePath, task.data, 'utf-8');
     } else {
         await fse.outputFile(filePath, task.data, 'utf-8');
